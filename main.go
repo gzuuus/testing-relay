@@ -25,8 +25,6 @@ type RelayConfig struct {
 	PubKey           string        `envconfig:"PUBKEY"`
 	AllowedKinds     []int         `envconfig:"ALLOWED_KINDS"`
 	WhitelistPubkeys []string      `envconfig:"WHITELIST_PUBKEYS"`
-	MaxContentLength int           `envconfig:"MAX_CONTENT_LENGTH" default:"250000"`
-	MaxEventTags     int           `envconfig:"MAX_EVENT_TAGS" default:"2000"`
 	Debug            bool          `envconfig:"DEBUG" default:"false"`
 }
 
@@ -50,6 +48,20 @@ func (l *Logger) Debug(format string, v ...interface{}) {
 
 func (l *Logger) Error(format string, v ...interface{}) {
 	log.Printf("[ERROR] "+format, v...)
+}
+
+// ValidateEvent checks if an event meets the relay's requirements
+func (cfg *RelayConfig) ValidateEvent(event *nostr.Event) (reject bool, msg string) {
+
+	if len(cfg.AllowedKinds) > 0 && !contains(cfg.AllowedKinds, event.Kind) {
+		return true, fmt.Sprintf("blocked: event kind %d not allowed, allowed kinds: %v", event.Kind, cfg.AllowedKinds)
+	}
+
+	if len(cfg.WhitelistPubkeys) > 0 && !contains(cfg.WhitelistPubkeys, event.PubKey) {
+		return true, "blocked: pubkey not in whitelist"
+	}
+
+	return false, ""
 }
 
 func main() {
@@ -81,23 +93,7 @@ func main() {
 
 	relay.RejectEvent = append(relay.RejectEvent,
 		func(ctx context.Context, event *nostr.Event) (reject bool, msg string) {
-			if cfg.MaxContentLength > 0 && len(event.Content) > cfg.MaxContentLength {
-				return true, fmt.Sprintf("blocked: content length exceeds maximum of %d", cfg.MaxContentLength)
-			}
-
-			if cfg.MaxEventTags > 0 && len(event.Tags) > cfg.MaxEventTags {
-				return true, fmt.Sprintf("blocked: number of tags exceeds maximum of %d", cfg.MaxEventTags)
-			}
-
-			if len(cfg.AllowedKinds) > 0 && !contains(cfg.AllowedKinds, event.Kind) {
-				return true, fmt.Sprintf("blocked: event kind %d not allowed, allowed kinds: %v", event.Kind, cfg.AllowedKinds)
-			}
-
-			if len(cfg.WhitelistPubkeys) > 0 && !contains(cfg.WhitelistPubkeys, event.PubKey) {
-				return true, "blocked: pubkey not in whitelist"
-			}
-
-			return false, ""
+			return cfg.ValidateEvent(event)
 		},
 	)
 
@@ -134,6 +130,7 @@ func main() {
 	}
 }
 
+// ... rest of the code remains the same ...
 func handleRoot(relay *khatru.Relay, cfg *RelayConfig) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if strings.ToLower(r.Header.Get("Upgrade")) == "websocket" {
@@ -149,11 +146,9 @@ func handleRoot(relay *khatru.Relay, cfg *RelayConfig) http.HandlerFunc {
 				"description": cfg.Description,
 				"pubkey":      cfg.PubKey,
 				"config": map[string]interface{}{
-					"allowed_kinds":      cfg.AllowedKinds,
-					"whitelist_enabled":  len(cfg.WhitelistPubkeys) > 0,
-					"max_content_length": cfg.MaxContentLength,
-					"max_event_tags":     cfg.MaxEventTags,
-					"debug_enabled":      cfg.Debug,
+					"allowed_kinds":     cfg.AllowedKinds,
+					"whitelist_enabled": len(cfg.WhitelistPubkeys) > 0,
+					"debug_enabled":     cfg.Debug,
 				},
 			})
 
@@ -178,8 +173,6 @@ func handleRoot(relay *khatru.Relay, cfg *RelayConfig) http.HandlerFunc {
 							<pre>
 Allowed Event Kinds: %v
 Whitelist Enabled: %v
-Max Content Length: %d bytes
-Max Event Tags: %d
 Debug Enabled: %v
 							</pre>
 
@@ -190,7 +183,7 @@ Debug Enabled: %v
 				</html>
 			`, cfg.Name, cfg.Name, cfg.Description,
 				cfg.AllowedKinds, len(cfg.WhitelistPubkeys) > 0,
-				cfg.MaxContentLength, cfg.MaxEventTags, cfg.Debug,
+				cfg.Debug,
 				r.Host, cfg.Port)
 		}
 	}
